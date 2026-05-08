@@ -25,3 +25,7 @@ Agent rules:
 - Do not hand-write Supabase `curl` commands when an existing script supports the task.
 - Use `get_answer.py --stats` or `get_answer.py --list` for read-only QA-bank inspection.
 - Use `set_answer.py` only when the user explicitly asks to upload or update answers.
+
+
+## Related Work
+Welcome to try this skill in: https://github.com/milo-ally/microcode or other agent system like codex, claude-code etc. 

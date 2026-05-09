@@ -64,6 +64,9 @@ Important agent behavior:
 - Keep SQL simple. Do not run joins, subqueries, CTEs, grouping, `OR`, parenthesized boolean expressions, functions, transactions, DDL, or multi-table queries.
 - Prefer one-shot commands with `tsql -c "..."` over opening the interactive prompt when acting autonomously.
 - Use `limit` on exploratory `SELECT` queries.
+- When inserting a new question, generate the `fingerprint` with `./tsql --fingerprint TYPE TITLE`. Do not inspect existing rows or source code just to infer the fingerprint format.
+- Fingerprint format is `{type}_{first16hex(md5(title))}`. Example type values are `1` for single-choice, `2` for fill-in, `3` for true/false, and multi-choice should follow the existing question type value used by the database.
+- Before `INSERT`, check for an existing row with the generated fingerprint. If it exists, use `UPDATE`; if not, use `INSERT`.
 
 Recommended direct commands:
 
@@ -72,6 +75,16 @@ cd skills/tg-skill/scripts
 ./tsql -c "select id,title,answer from questions limit 5"
 ./tsql -c "select id,title,answer from questions where title like '%计算机%' limit 10"
 ./tsql -c "select id,title,answer from questions where fingerprint = 'fingerprint_value' limit 1"
+./tsql --fingerprint 2 "question title"
+```
+
+Recommended insert workflow:
+
+```bash
+cd skills/tg-skill/scripts
+FP="$(./tsql --fingerprint 2 "填空题题干")"
+./tsql -c "select id,fingerprint,title,answer from questions where fingerprint = '$FP' limit 1"
+./tsql -c "insert into questions (fingerprint,title,answer,type,course) values ('$FP','填空题题干','答案1|||答案2','2','课程名')"
 ```
 
 ## Build
@@ -177,5 +190,3 @@ Unsupported SQL must be rejected instead of guessed. This includes joins, subque
 - It cannot use REST publishable keys to inspect all database schemas unless the Supabase project exposes schema metadata to that key.
 - `DELETE` may silently affect zero visible rows if Supabase RLS denies deletion; always verify with a following `SELECT`.
 - SQL strings should use single quotes. Example: `where title like '%计算机%'`.
-
-Good Luck~

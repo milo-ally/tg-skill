@@ -8,8 +8,8 @@
 #include <strings.h>
 #include <unistd.h>
 
-#define DEFAULT_URL "..."
-#define DEFAULT_KEY "..."
+#define DEFAULT_URL "https://qlfinntromtdvjxyvbyn.supabase.co"
+#define DEFAULT_KEY "sb_publishable_jEf_67lB3bvHpFVGL8ov_Q_Xi3iV1il"
 
 #define MAX_SQL 8192
 #define MAX_URL 16384
@@ -434,6 +434,50 @@ static void shell_quote(char *dst, size_t dst_sz, const char *src) {
     strncat(dst, "'", dst_sz - strlen(dst) - 1);
 }
 
+static bool is_hex_digest(const char *s) {
+    if (!s || strlen(s) < 32) return false;
+    for (int i = 0; i < 32; i++) {
+        if (!isxdigit((unsigned char)s[i])) return false;
+    }
+    return true;
+}
+
+static int print_fingerprint(const char *type, const char *title) {
+    if (!type || !*type || !title || !*title) {
+        fprintf(stderr, "usage: tsql --fingerprint TYPE TITLE\n");
+        return 2;
+    }
+    for (const char *p = type; *p; p++) {
+        if (!(isalnum((unsigned char)*p) || *p == '_')) {
+            fprintf(stderr, "invalid type for fingerprint: %s\n", type);
+            return 2;
+        }
+    }
+    char q_title[MAX_SQL * 2];
+    shell_quote(q_title, sizeof(q_title), title);
+    char cmd[MAX_SQL * 2 + 128];
+    snprintf(cmd, sizeof(cmd), "printf %%s %s | md5sum", q_title);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        perror("md5sum");
+        return 2;
+    }
+    char digest[128] = "";
+    if (!fgets(digest, sizeof(digest), fp)) {
+        pclose(fp);
+        fprintf(stderr, "failed to generate md5 digest\n");
+        return 2;
+    }
+    int rc = pclose(fp);
+    if (rc != 0 || !is_hex_digest(digest)) {
+        fprintf(stderr, "failed to generate md5 digest\n");
+        return 2;
+    }
+    digest[16] = '\0';
+    printf("%s_%s\n", type, digest);
+    return 0;
+}
+
 static int http_request(const char *method, const char *url, const char *body, bool count) {
     const char *key = getenv("TSQL_SUPABASE_KEY");
     if (!key || !*key) key = DEFAULT_KEY;
@@ -497,9 +541,11 @@ static char *read_file_text(const char *path) {
 static void usage(void) {
     printf("tsql - SQL-subset CLI for Supabase REST\n");
     printf("usage: tsql [--dry-run] [--count] [-c SQL] [-f FILE] [SQL]\n");
+    printf("       tsql --fingerprint TYPE TITLE\n");
     printf("       tsql\n");
     printf("examples:\n");
     printf("  tsql -c \"select * from questions limit 5\"\n");
+    printf("  tsql --fingerprint 2 \"question title\"\n");
     printf("  tsql -f script.sql\n");
     printf("  tsql \"select * from questions limit 5\"\n");
     printf("  tsql \"select id,title,answer from questions where type = '3' order by id desc limit 10\"\n");
@@ -664,16 +710,22 @@ int main(int argc, char **argv) {
     bool count = false;
     const char *sql_arg = NULL;
     const char *file_arg = NULL;
+    const char *fingerprint_type = NULL;
+    const char *fingerprint_title = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();
             return 0;
+        } else if (strcmp(argv[i], "--fingerprint") == 0 && i + 2 < argc) {
+            fingerprint_type = argv[++i];
+            fingerprint_title = argv[++i];
         } else if (strcmp(argv[i], "--dry-run") == 0) dry_run = true;
         else if (strcmp(argv[i], "--count") == 0) count = true;
         else if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) sql_arg = argv[++i];
         else if (strcmp(argv[i], "-f") == 0 && i + 1 < argc) file_arg = argv[++i];
         else sql_arg = argv[i];
     }
+    if (fingerprint_type || fingerprint_title) return print_fingerprint(fingerprint_type, fingerprint_title);
     char *stdin_sql = NULL;
     char *file_sql = NULL;
     const char *sql = sql_arg;

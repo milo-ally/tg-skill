@@ -48,12 +48,12 @@ Run database work from this skill directory:
 cd skills/tg-skill/scripts
 ```
 
-`scripts/` contains the C implementation of `tsql`. It is a strict SQL-subset CLI that translates supported SQL into Supabase PostgREST requests. It provides a psql-like interactive prompt, `-c` one-shot commands, `-f` script execution, slash commands, and CRUD integration checks.
+`scripts/` contains the C implementation of `tsql`. It is a strict SQL-subset CLI that translates supported SQL into Supabase PostgREST requests. It provides a psql-like interactive prompt, `-c` one-shot commands, `-f` script execution, and slash commands.
 
 Important agent behavior:
 
-- Use the compiled `scripts/tsql` tool directly for QA-bank inspection and CRUD checks.
-- Do not read `scripts/src/tsql.c`, `scripts/tests/*.sql`, or other implementation files just to answer normal database questions. Run `tsql` instead.
+- Use the compiled `scripts/tsql` tool directly for QA-bank inspection.
+- Do not read `scripts/src/tsql.c` or other implementation files just to answer normal database questions. Run `tsql` instead.
 - Do not hand-write `curl` Supabase REST commands when `tsql` supports the task.
 - Do not refer to retired Python helpers such as `get_answer.py`, `set_answer.py`, or `search_answer.py`.
 - Treat `tsql` as a strict SQL subset, not a full PostgreSQL engine.
@@ -128,7 +128,7 @@ tsql -c "select id,title from questions limit 1"
 Run a SQL script file:
 
 ```bash
-tsql -f tests/02_read.sql
+tsql -f script.sql
 ```
 
 Run a script from stdin:
@@ -170,26 +170,6 @@ Unsupported SQL must be rejected instead of guessed. This includes joins, subque
 \conninfo       show the current Supabase REST endpoint
 ```
 
-## CRUD test scripts
-
-`scripts/tests/` contains four SQL scripts:
-
-```text
-01_create.sql
-02_read.sql
-03_update.sql
-04_delete.sql
-```
-
-Run the integration test:
-
-```bash
-cd skills/tg-skill/scripts
-make test-crud
-```
-
-The test creates a temporary row with a unique `fingerprint`, reads it, updates it, then attempts to delete it. If deletion fails while create/read/update pass, treat it as an API key or Supabase RLS DELETE permission limitation, not necessarily a `tsql` parser failure.
-
 ## Important limitations
 
 - `tsql` is not a complete SQL compiler and not a PostgreSQL wire-protocol client.
@@ -197,3 +177,5 @@ The test creates a temporary row with a unique `fingerprint`, reads it, updates 
 - It cannot use REST publishable keys to inspect all database schemas unless the Supabase project exposes schema metadata to that key.
 - `DELETE` may silently affect zero visible rows if Supabase RLS denies deletion; always verify with a following `SELECT`.
 - SQL strings should use single quotes. Example: `where title like '%计算机%'`.
+
+Good Luck~

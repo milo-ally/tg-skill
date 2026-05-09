@@ -1,4 +1,4 @@
-# tg-skills
+# tg-skill
 
 `tg-skills` is an agent skill for the Touge/头歌 platform. It uses `playwright-cli` for browser automation and provides atomic helper scripts for QA-bank operations.
 

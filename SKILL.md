@@ -52,13 +52,27 @@ cd skills/tg-skill/scripts
 
 Important agent behavior:
 
-- Use `scripts/tsql` for QA-bank SQL inspection and CRUD checks.
+- Use the compiled `scripts/tsql` tool directly for QA-bank inspection and CRUD checks.
+- Do not read `scripts/src/tsql.c`, `scripts/tests/*.sql`, or other implementation files just to answer normal database questions. Run `tsql` instead.
 - Do not hand-write `curl` Supabase REST commands when `tsql` supports the task.
 - Do not refer to retired Python helpers such as `get_answer.py`, `set_answer.py`, or `search_answer.py`.
 - Treat `tsql` as a strict SQL subset, not a full PostgreSQL engine.
 - If unsupported SQL is needed, explain the limitation instead of guessing a translation.
 - For fuzzy matching, use regular SQL syntax: `LIKE '%keyword%'` or PostgreSQL/Supabase `ILIKE '%keyword%'`.
 - After `DELETE`, always verify with `SELECT`, because Supabase RLS may allow the request but affect zero rows.
+- The Supabase QA bank exposed to this skill has only one intended table: `questions`. Do not query other tables unless the user explicitly provides one and asks to override this rule.
+- Keep SQL simple. Do not run joins, subqueries, CTEs, grouping, `OR`, parenthesized boolean expressions, functions, transactions, DDL, or multi-table queries.
+- Prefer one-shot commands with `tsql -c "..."` over opening the interactive prompt when acting autonomously.
+- Use `limit` on exploratory `SELECT` queries.
+
+Recommended direct commands:
+
+```bash
+cd skills/tg-skill/scripts
+./tsql -c "select id,title,answer from questions limit 5"
+./tsql -c "select id,title,answer from questions where title like '%计算机%' limit 10"
+./tsql -c "select id,title,answer from questions where fingerprint = 'fingerprint_value' limit 1"
+```
 
 ## Build
 
@@ -128,6 +142,12 @@ Script files support semicolon-terminated multi-line SQL, `--` line comments, an
 
 ## Supported SQL subset
 
+The only normal table is:
+
+```text
+questions
+```
+
 - `SELECT columns FROM table`
 - `INSERT INTO table (columns) VALUES (values)`
 - `UPDATE table SET column = value [, ...] WHERE ...`
@@ -137,7 +157,7 @@ Script files support semicolon-terminated multi-line SQL, `--` line comments, an
 - `LIMIT n`
 - `OFFSET n`
 
-Unsupported SQL must be rejected instead of guessed. This includes joins, subqueries, CTEs, grouping, arbitrary expressions, `OR`, parenthesized boolean expressions, and multiple-column ordering.
+Unsupported SQL must be rejected instead of guessed. This includes joins, subqueries, CTEs, grouping, arbitrary expressions, `OR`, parenthesized boolean expressions, functions, transactions, DDL, multi-table queries, and multiple-column ordering.
 
 ## Slash commands
 

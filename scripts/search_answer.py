@@ -1,123 +1,118 @@
-"""search-answer — Search candidate answers with Bing/Baidu web crawling."""
+"""search-answer — Search candidate answers using microcode-style web search/fetch logic."""
 
 from __future__ import annotations
 
 import argparse
-import html
 import json
-import re
-import ssl
-import urllib.error
-import urllib.parse
-import urllib.request
+import os
+from typing import Any
 
-USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+import httpx
 
-
-def fetch(url: str, timeout: int = 10) -> str:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        },
-    )
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-        return resp.read().decode("utf-8", errors="ignore")
+USER_AGENT = "microcode/0.1.0"
 
 
-def strip_tags(text: str) -> str:
-    text = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.I)
-    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+def web_fetch(url: str) -> dict[str, Any]:
+    if not url:
+        return {"error": "missing required field 'url'"}
 
-
-def clean_url(url: str) -> str:
-    url = html.unescape(url)
-    parsed = urllib.parse.urlparse(url)
-    query = urllib.parse.parse_qs(parsed.query)
-    for key in ("url", "u", "target", "wd"):
-        if key in query and query[key]:
-            return query[key][0]
-    return url
-
-
-def compact_text(text: str, limit: int = 300) -> str:
-    text = strip_tags(text)
-    return text[:limit] + ("..." if len(text) > limit else "")
-
-
-def bing_search(query: str, limit: int = 5) -> tuple[list[dict], str | None]:
-    url = "https://www.bing.com/search?" + urllib.parse.urlencode({"q": query})
     try:
-        page = fetch(url)
+        with httpx.Client(follow_redirects=True, timeout=30.0, verify=False) as client:
+            response = client.get(url, headers={"User-Agent": USER_AGENT})
+            response.raise_for_status()
+
+        body = response.text
+        content_type = response.headers.get("content-type", "")
+
+        try:
+            from readability import Document
+            from bs4 import BeautifulSoup
+
+            doc = Document(body)
+            soup = BeautifulSoup(doc.summary(), "lxml")
+            text = soup.get_text(separator="\n", strip=True)
+        except ImportError:
+            try:
+                from bs4 import BeautifulSoup
+
+                soup = BeautifulSoup(body, "lxml")
+                text = soup.get_text(separator="\n", strip=True)
+            except ImportError:
+                text = body[:5000]
+
+        if len(text) > 50_000:
+            text = text[:50_000] + "\n... [content truncated]"
+
+        return {"url": url, "content_type": content_type, "text": text, "status": "ok"}
+    except httpx.HTTPError as exc:
+        return {"error": f"HTTP error fetching {url}: {exc}"}
     except Exception as exc:
-        return [], f"bing fetch failed: {type(exc).__name__}: {exc}"
+        return {"error": str(exc)}
 
-    results: list[dict] = []
-    blocks = re.findall(r'<li class="b_algo"[\s\S]*?</li>', page, flags=re.I)
-    for block in blocks:
-        link = re.search(r'<a[^>]+href="(.*?)"[^>]*>([\s\S]*?)</a>', block, flags=re.I)
-        if not link:
-            continue
-        snippet_match = re.search(r'<p[^>]*>([\s\S]*?)</p>', block, flags=re.I)
-        title = strip_tags(link.group(2))
-        snippet = strip_tags(snippet_match.group(1)) if snippet_match else compact_text(block)
-        results.append({"engine": "bing", "url": clean_url(link.group(1)), "title": title, "snippet": snippet})
-        if len(results) >= limit:
-            break
 
-    if not results:
-        anchors = re.findall(r'<a[^>]+href="(https?://[^"]+)"[^>]*>([\s\S]*?)</a>', page, flags=re.I)
-        for raw_url, title_html in anchors:
-            title = strip_tags(title_html)
-            if not title or "bing" in raw_url:
-                continue
-            results.append({"engine": "bing", "url": clean_url(raw_url), "title": title, "snippet": title})
+def web_search(query: str, limit: int = 10) -> dict[str, Any]:
+    if not query:
+        return {"error": "missing required field 'query'"}
+
+    searx_url = os.environ.get("SEARXNG_URL") or os.environ.get("SEARX_URL")
+    if searx_url:
+        result = search_searxng(searx_url, query, limit)
+        if "error" not in result:
+            return result
+
+    return search_duckduckgo(query, limit)
+
+
+def search_searxng(base_url: str, query: str, limit: int) -> dict[str, Any]:
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15.0, verify=False) as client:
+            response = client.get(
+                f"{base_url.rstrip('/')}/search",
+                params={"q": query, "format": "json"},
+                headers={"User-Agent": USER_AGENT},
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        results = []
+        for item in data.get("results", [])[:limit]:
+            results.append({"title": item.get("title", ""), "url": item.get("url", ""), "snippet": item.get("content", "")})
+        return {"query": query, "results": results, "total": len(results), "engine": "searxng"}
+    except Exception as exc:
+        return {"error": f"SearXNG search failed: {exc}"}
+
+
+def search_duckduckgo(query: str, limit: int) -> dict[str, Any]:
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15.0, verify=False) as client:
+            response = client.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                headers={"User-Agent": USER_AGENT},
+            )
+            response.raise_for_status()
+
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(response.text, "lxml")
+        results = []
+        for result_div in soup.select(".result"):
+            title_el = result_div.select_one(".result__title a")
+            snippet_el = result_div.select_one(".result__snippet")
+            if title_el:
+                results.append({
+                    "title": title_el.get_text(strip=True),
+                    "url": title_el.get("href", ""),
+                    "snippet": snippet_el.get_text(strip=True) if snippet_el else "",
+                })
             if len(results) >= limit:
                 break
-
-    return results, None if results else "bing returned no parseable results"
-
-
-def baidu_search(query: str, limit: int = 5) -> tuple[list[dict], str | None]:
-    url = "https://www.baidu.com/s?" + urllib.parse.urlencode({"wd": query})
-    try:
-        page = fetch(url)
+        return {"query": query, "results": results, "total": len(results), "engine": "duckduckgo"}
     except Exception as exc:
-        return [], f"baidu fetch failed: {type(exc).__name__}: {exc}"
-
-    results: list[dict] = []
-    blocks = re.findall(r'<div[^>]+(?:class|tpl)="[^"]*(?:result|c-container)[^"]*"[\s\S]*?</div>\s*</div>', page, flags=re.I)
-    if not blocks:
-        blocks = re.findall(r'<div[^>]+class="[^"]*result[^"]*"[\s\S]*?</div>', page, flags=re.I)
-
-    for block in blocks:
-        link = re.search(r'<a[^>]+href="(.*?)"[^>]*>([\s\S]*?)</a>', block, flags=re.I)
-        if not link:
-            continue
-        snippet = compact_text(block)
-        title = strip_tags(link.group(2))
-        raw_url = clean_url(link.group(1))
-        if not title and len(snippet) < 30:
-            continue
-        if any(skip in raw_url for skip in ("top.baidu.com", "chat.baidu.com/search")):
-            continue
-        if snippet in {"网页 图片 资讯 视频 笔记 地图 贴吧 文库 更多 搜索工具", "换一换"}:
-            continue
-        results.append({"engine": "baidu", "url": raw_url, "title": title, "snippet": snippet})
-        if len(results) >= limit:
-            break
-
-    return results, None if results else "baidu returned no parseable results"
+        return {"error": f"Web search failed: {exc}"}
 
 
-def parse_options(raw: str) -> list[dict]:
+def parse_options(raw: str) -> list[dict[str, str]]:
     options = []
     for item in raw.split(",") if raw else []:
         if ":" in item:
@@ -128,7 +123,7 @@ def parse_options(raw: str) -> list[dict]:
     return options
 
 
-def score_options(options: list[dict], documents: list[str]) -> list[dict]:
+def score_options(options: list[dict[str, str]], documents: list[str]) -> list[dict[str, Any]]:
     corpus = " ".join(documents)
     compact_corpus = corpus.replace(" ", "")
     scored = []
@@ -137,64 +132,56 @@ def score_options(options: list[dict], documents: list[str]) -> list[dict]:
         compact = text.replace(" ", "")
         score = corpus.count(text) + compact_corpus.count(compact) if text else 0
         scored.append({"letter": opt.get("letter", ""), "text": text, "score": score})
-    return sorted(scored, key=lambda x: x["score"], reverse=True)
+    return sorted(scored, key=lambda item: item["score"], reverse=True)
 
 
-def run_engine(engine: str, query: str, limit: int) -> tuple[list[dict], str | None]:
-    if engine == "baidu":
-        return baidu_search(query, limit)
-    return bing_search(query, limit)
+def search_answer(question: str, options: list[dict[str, str]], limit: int = 5, fetch_pages: int = 0) -> dict[str, Any]:
+    query = question + (" " + " ".join(option.get("text", "") for option in options) if options else "")
+    search = web_search(query, limit)
+    if "error" in search:
+        return {"query": query, "best_guess": None, "candidates": score_options(options, []), "sources": [], "error": search["error"]}
 
+    sources = search.get("results", [])
+    fetched = []
+    for source in sources[:max(0, fetch_pages)]:
+        content = web_fetch(source.get("url", ""))
+        if content.get("status") == "ok":
+            fetched.append({"url": content.get("url", ""), "text": content.get("text", "")[:3000]})
 
-def search_answer(question: str, options: list[dict], limit: int = 5, engine: str = "auto") -> dict:
-    query = question + (" " + " ".join(o.get("text", "") for o in options) if options else "")
-    engines = ["bing", "baidu"] if engine == "auto" else [engine]
-    diagnostics = []
-    sources: list[dict] = []
-    used_engine = None
-
-    for name in engines:
-        sources, error = run_engine(name, query, limit)
-        if error:
-            diagnostics.append(error)
-        if sources:
-            used_engine = name
-            break
-
-    documents = [f"{s.get('title', '')} {s.get('snippet', '')}" for s in sources]
+    documents = [f"{item.get('title', '')} {item.get('snippet', '')}" for item in sources]
+    documents.extend(item.get("text", "") for item in fetched)
     candidates = score_options(options, documents) if options else []
     return {
-        "engine": used_engine or engine,
+        "engine": search.get("engine", "unknown"),
         "query": query,
         "best_guess": candidates[0] if candidates and candidates[0]["score"] > 0 else None,
         "candidates": candidates,
         "sources": sources,
-        "diagnostics": diagnostics,
+        "fetched": fetched,
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Search candidate answer from Bing/Baidu web pages")
+    parser = argparse.ArgumentParser(description="Search candidate answers using microcode-style web_search/web_fetch logic")
     parser.add_argument("--question", required=True)
     parser.add_argument("--options", default="")
     parser.add_argument("--limit", type=int, default=5)
-    parser.add_argument("--engine", default="auto", choices=["auto", "bing", "baidu"])
+    parser.add_argument("--fetch-pages", type=int, default=0)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    data = search_answer(args.question, parse_options(args.options), args.limit, args.engine)
+    data = search_answer(args.question, parse_options(args.options), args.limit, args.fetch_pages)
     if args.json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
-    else:
-        print(f"engine: {data['engine']}")
-        print(f"query: {data['query']}")
-        print(f"best_guess: {data['best_guess']}")
-        if data["diagnostics"]:
-            print("diagnostics:")
-            for item in data["diagnostics"]:
-                print(f"- {item}")
-        for src in data["sources"]:
-            print(f"- {src.get('title', '')}: {src.get('snippet', '')} ({src.get('url', '')})")
+        return
+
+    print(f"engine: {data.get('engine')}")
+    print(f"query: {data['query']}")
+    print(f"best_guess: {data.get('best_guess')}")
+    if data.get("error"):
+        print(f"error: {data['error']}")
+    for source in data.get("sources", []):
+        print(f"- {source.get('title', '')}: {source.get('snippet', '')} ({source.get('url', '')})")
 
 
 if __name__ == "__main__":

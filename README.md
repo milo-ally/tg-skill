@@ -1,11 +1,11 @@
 # tg-skill
 
-`tg-skills` is an agent skill for the Touge/头歌 platform. It uses `playwright-cli` for browser automation and provides atomic helper scripts for QA-bank operations.
+`tg-skill` is an agent skill for the Touge/头歌 platform. It uses `playwright-cli` for browser automation and provides atomic helper scripts for QA-bank operations.
 
 ## Layout
 
 ```text
-tg-skills/
+tg-skill/
 ├── scripts/
 │   ├── get_answer.py
 │   ├── set_answer.py

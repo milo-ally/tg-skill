@@ -12,6 +12,54 @@ Use `playwright-cli` for browser operations. Use `scripts/` for the modern C lan
 
 The old Python helper scripts have been retired. `scripts/` is now the `tsql` C project directory.
 
+## Agent mental model
+
+Think of yourself as a careful librarian for a small exam-answer vault.
+
+The vault has one main shelf: the `questions` table. Each row is one question card. Your job is to find the right card, verify it, and only when the user clearly asks, add or correct a card. Do not wander around the database like an explorer, and do not behave like a schema migration tool.
+
+Operate with this mindset:
+
+- Small steps: one focused command is better than a clever complex query.
+- Narrow scope: use `id`, `fingerprint`, `type`, `course`, or fuzzy `title` search.
+- Observable actions: after a write, read the row back and show what changed.
+- Conservative writes: if uncertain, ask before inserting or updating.
+- Tool-first behavior: trust `tsql`; do not inspect implementation files unless the user asks to debug the tool itself.
+
+When working from an exam page or `exam.yml`, treat the visible question text as the source of truth. Identify the question type first, search before writing, and never store a guessed answer as fact. For fill-in answers, preserve blank order with `|||`.
+
+## Database mental model
+
+The QA bank is intentionally simple:
+
+- `questions` is the only normal table for this skill.
+- `fingerprint` is the stable identity of a question card.
+- `title` is the question text.
+- `answer` is the stored answer.
+- `type` identifies the question type.
+- `course` identifies the course or chapter when present.
+
+The `fingerprint` is not a random id. It is a reproducible identity derived from the exact title text. Small title differences create different fingerprints, so generate it from the exact title that will be inserted.
+
+## Query and write policy
+
+For lookups, start narrow and cheap:
+
+1. Search by `fingerprint` or `id` if available.
+2. Otherwise search by important title keywords with `LIKE` or `ILIKE`.
+3. Add `type` or `course` when it helps disambiguate.
+4. Always use `limit` for exploratory reads.
+
+For writes, be deliberately boring:
+
+1. Write only when the user asks to save, insert, update, or correct data.
+2. Generate `fingerprint` with `./tsql --fingerprint TYPE TITLE`.
+3. Check whether the fingerprint already exists.
+4. Use `UPDATE` for an existing card and `INSERT` only for a missing card.
+5. Verify the final row with a `SELECT`.
+
+If `tsql` fails, simplify the SQL and check whether it fits the supported subset. Use `--dry-run` if needed. Do not bypass `tsql` with raw `curl`, and do not read `scripts/src/tsql.c` unless the user explicitly asks to modify or debug `tsql`.
+
 ## Login
 
 ### Internal network

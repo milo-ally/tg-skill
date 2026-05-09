@@ -28,6 +28,8 @@ Operate with this mindset:
 
 When working from an exam page or `exam.yml`, treat the visible question text as the source of truth. Identify the question type first, search before writing, and never store a guessed answer as fact. For fill-in answers, preserve blank order with `|||`.
 
+During an exam browser flow, keep navigation simple: after finishing the current question, click the visible `下一题` button to enter the next question. Do not hunt through the question index, side panels, hidden controls, or unrelated page elements unless the user explicitly asks; the page is complex, and the safe path is the direct next-question button.
+
 ## Database mental model
 
 The QA bank is intentionally simple:

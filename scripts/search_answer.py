@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-USER_AGENT = "microcode/0.1.0"
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
 
 
 def web_fetch(url: str) -> dict[str, Any]:
@@ -55,12 +55,20 @@ def web_search(query: str, limit: int = 10) -> dict[str, Any]:
         return {"error": "missing required field 'query'"}
 
     searx_url = os.environ.get("SEARXNG_URL") or os.environ.get("SEARX_URL")
+    errors = []
     if searx_url:
         result = search_searxng(searx_url, query, limit)
         if "error" not in result:
             return result
+        errors.append(result["error"])
 
-    return search_duckduckgo(query, limit)
+    for searcher in (search_duckduckgo, search_bing, search_baidu):
+        result = searcher(query, limit)
+        if "error" not in result and result.get("results"):
+            result["errors"] = errors
+            return result
+        errors.append(result.get("error") or f"{result.get('engine', 'search')} returned no results")
+    return {"error": "; ".join(errors)}
 
 
 def search_searxng(base_url: str, query: str, limit: int) -> dict[str, Any]:
@@ -109,7 +117,67 @@ def search_duckduckgo(query: str, limit: int) -> dict[str, Any]:
                 break
         return {"query": query, "results": results, "total": len(results), "engine": "duckduckgo"}
     except Exception as exc:
-        return {"error": f"Web search failed: {exc}"}
+        return {"error": f"DuckDuckGo search failed: {exc}"}
+
+
+def search_bing(query: str, limit: int) -> dict[str, Any]:
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15.0, verify=False) as client:
+            response = client.get(
+                "https://www.bing.com/search",
+                params={"q": query},
+                headers={"User-Agent": USER_AGENT},
+            )
+            response.raise_for_status()
+
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(response.text, "lxml")
+        results = []
+        for item in soup.select("li.b_algo"):
+            title_el = item.select_one("h2 a") or item.select_one("a")
+            snippet_el = item.select_one("p")
+            if title_el:
+                results.append({
+                    "title": title_el.get_text(" ", strip=True),
+                    "url": title_el.get("href", ""),
+                    "snippet": snippet_el.get_text(" ", strip=True) if snippet_el else "",
+                })
+            if len(results) >= limit:
+                break
+        return {"query": query, "results": results, "total": len(results), "engine": "bing"}
+    except Exception as exc:
+        return {"error": f"Bing search failed: {exc}"}
+
+
+def search_baidu(query: str, limit: int) -> dict[str, Any]:
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15.0, verify=False) as client:
+            response = client.get(
+                "https://www.baidu.com/s",
+                params={"wd": query},
+                headers={"User-Agent": USER_AGENT},
+            )
+            response.raise_for_status()
+
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(response.text, "lxml")
+        results = []
+        for item in soup.select(".result, .c-container"):
+            title_el = item.select_one("h3 a") or item.select_one("a")
+            if not title_el:
+                continue
+            snippet = item.get_text(" ", strip=True)
+            url = title_el.get("href", "")
+            if "top.baidu.com" in url or "chat.baidu.com/search" in url:
+                continue
+            results.append({"title": title_el.get_text(" ", strip=True), "url": url, "snippet": snippet[:300]})
+            if len(results) >= limit:
+                break
+        return {"query": query, "results": results, "total": len(results), "engine": "baidu"}
+    except Exception as exc:
+        return {"error": f"Baidu search failed: {exc}"}
 
 
 def parse_options(raw: str) -> list[dict[str, str]]:

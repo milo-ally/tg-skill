@@ -1,31 +1,73 @@
 # tg-skill
 
-`tg-skill` is an agent skill for the Touge/头歌 platform. It uses `playwright-cli` for browser automation and provides atomic helper scripts for QA-bank operations.
+`tg-skill` is an agent skill for the Touge/头歌 platform. It uses `playwright-cli` for browser automation and the C language `tsql` CLI in `scripts/` for Supabase QA-bank inspection and CRUD checks.
+
+The old Python helper scripts have been retired. `scripts/` is now the `tsql` C project directory.
 
 ## Layout
 
 ```text
 tg-skill/
 ├── scripts/
-│   ├── get_answer.py
-│   ├── set_answer.py
-│   └── search_answer.py
+│   ├── Makefile
+│   ├── README.md
+│   ├── src/tsql.c
+│   ├── tests/
+│   │   ├── 01_create.sql
+│   │   ├── 02_read.sql
+│   │   ├── 03_update.sql
+│   │   ├── 04_delete.sql
+│   │   └── test.sh
+│   └── tsql
 ├── SKILL.md
-├── requirements.txt
 ├── LICENCE
 ├── README.md
 └── .gitignore
 ```
 
-## Atomic scripts
+## Browser automation
 
-Agent rules:
+Use `playwright-cli` for Touge/头歌 browser operations. See `SKILL.md` for internal-network and VPN login flows.
 
-- Prefer scripts under `scripts/` before custom shell commands.
-- Do not hand-write Supabase `curl` commands when an existing script supports the task.
-- Use `get_answer.py --stats` or `get_answer.py --list` for read-only QA-bank inspection.
-- Use `set_answer.py` only when the user explicitly asks to upload or update answers.
+## Database CLI
 
+Build `tsql`:
 
-## Related Work
-Welcome to try this skill in: https://github.com/milo-ally/microcode or other agent system like codex, claude-code etc. 
+```bash
+cd scripts
+make
+```
+
+Run interactively:
+
+```bash
+./tsql
+```
+
+Run one command:
+
+```bash
+./tsql -c "select id,title,answer from questions limit 5"
+```
+
+Run a SQL script:
+
+```bash
+./tsql -f tests/02_read.sql
+```
+
+Run CRUD integration checks:
+
+```bash
+make test-crud
+```
+
+## Notes
+
+- `tsql` is a strict SQL subset translated to Supabase REST, not a full PostgreSQL engine.
+- Use `LIKE '%keyword%'` or `ILIKE '%keyword%'` for fuzzy matching.
+- Verify `DELETE` with a following `SELECT`, because Supabase RLS may deny deletion while the request itself succeeds.
+
+## License
+
+MIT

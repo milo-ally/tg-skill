@@ -1,22 +1,16 @@
 ---
-name: tg-skills
-description: Automate browser interactions for zcst students on touge/头歌 platform and use atomic answer helper scripts.
-tags: [touge, playwright, qa-bank, education]
+name: tg-skill
+description: Automate browser interactions for zcst students on Touge/头歌 and inspect the Supabase QA bank with the C tsql CLI.
+tags: [touge, playwright, qa-bank, education, tsql, c]
 ---
 
-# tg-skills
+# tg-skill
 
-This skill is part of `agent-skills` development. Install `playwright-cli`, move its generated skill into `./skills/playwright-cli`, then remove the temporary `.claude` directory (if you are claude ore codex, rename it or ignore it):
+This skill supports Touge/头歌 browser automation and Supabase QA-bank inspection.
 
-```bash
-npm install -g @playwright/cli@latest
-playwright-cli install --skills
-mkdir -p ./skills
-mv ./.claude/skills/playwright-cli ./skills/playwright-cli
-rm -rf ./.claude
-```
-Use `playwright-cli` for Touge/头歌 browser operations. Use scripts in `scripts/` as atomic helpers for answer lookup, answer upload, and web search.
+Use `playwright-cli` for browser operations. Use `scripts/` for the modern C language `tsql` command-line database tool.
 
+The old Python helper scripts have been retired. `scripts/` is now the `tsql` C project directory.
 
 ## Login
 
@@ -46,44 +40,140 @@ playwright-cli fill '请输入学工号' '<username>' && playwright-cli fill '�
 playwright-cli click '登 录'
 ```
 
-## Atomic scripts
+## Database tool: scripts/tsql
 
-Run from this skill directory: `skills/tg-skills`.
+Run database work from this skill directory:
+
+```bash
+cd skills/tg-skill/scripts
+```
+
+`scripts/` contains the C implementation of `tsql`. It is a strict SQL-subset CLI that translates supported SQL into Supabase PostgREST requests. It provides a psql-like interactive prompt, `-c` one-shot commands, `-f` script execution, slash commands, and CRUD integration checks.
 
 Important agent behavior:
 
-- Always trust and use the atomic scripts first.
-- Do not hand-write `curl` Supabase REST commands when a script supports the task.
-- For read-only QA bank inspection, use `get_answer.py --stats` or `get_answer.py --list`.
-- Use `set_answer.py` only when the user explicitly asks to upload or update answers.
+- Use `scripts/tsql` for QA-bank SQL inspection and CRUD checks.
+- Do not hand-write `curl` Supabase REST commands when `tsql` supports the task.
+- Do not refer to retired Python helpers such as `get_answer.py`, `set_answer.py`, or `search_answer.py`.
+- Treat `tsql` as a strict SQL subset, not a full PostgreSQL engine.
+- If unsupported SQL is needed, explain the limitation instead of guessing a translation.
+- For fuzzy matching, use regular SQL syntax: `LIKE '%keyword%'` or PostgreSQL/Supabase `ILIKE '%keyword%'`.
+- After `DELETE`, always verify with `SELECT`, because Supabase RLS may allow the request but affect zero rows.
 
-### get_answer.py
-
-Query Supabase cloud QA bank by question fingerprint.
-
-```bash
-python scripts/get_answer.py --stats --json
-python scripts/get_answer.py --list --limit 10 --json
-python scripts/get_answer.py --title "Question title" --type single --options 'A:Option 1,B:Option 2'
-python scripts/get_answer.py --title "Question title" --type single --options 'A:Option 1,B:Option 2' --multi-fp --json
-```
-
-### set_answer.py
-
-Upload verified answers to Supabase cloud QA bank.
+## Build
 
 ```bash
-python scripts/set_answer.py --title "Question title" --type single --options 'A:Option 1,B:Option 2' --answer A --confidence verified --course "Course name"
-python scripts/set_answer.py --batch questions.json --confidence verified --course "Course name"
+cd skills/tg-skill/scripts
+make
 ```
 
-### search_answer.py
-
-Search candidate answers using Bing/Baidu web crawling. Default engine is `auto`, which tries Bing first and then Baidu.
+## Optional user install
 
 ```bash
-python scripts/search_answer.py --question "Which layer does TCP belong to?" --options 'A:Network layer,B:Transport layer' --json
-python scripts/search_answer.py --engine baidu --question "Which layer does TCP belong to?" --options 'A:Network layer,B:Transport layer' --json
+cd skills/tg-skill/scripts
+make install-user
 ```
 
-Question types: `single`, `multi`, `judge`, `fill`. Confidence: `verified`, `high`, `medium`, `low`.
+If `tsql` is not on `PATH`:
+
+```bash
+make path-user
+source ~/.bashrc
+```
+
+Then it can be run from anywhere:
+
+```bash
+tsql
+```
+
+## Interactive usage
+
+```bash
+cd skills/tg-skill/scripts
+./tsql
+```
+
+```text
+tsql=> select id,title,answer from questions limit 5;
+tsql=> select title,answer from questions where title like '%计算机%' limit 10;
+tsql=> \dt
+tsql=> \d questions
+tsql=> \h
+tsql=> \q
+```
+
+## psql-like command modes
+
+Run one SQL command:
+
+```bash
+tsql -c "select id,title from questions limit 1"
+```
+
+Run a SQL script file:
+
+```bash
+tsql -f tests/02_read.sql
+```
+
+Run a script from stdin:
+
+```bash
+tsql < script.sql
+cat script.sql | tsql
+```
+
+Script files support semicolon-terminated multi-line SQL, `--` line comments, and slash commands at the start of a line.
+
+## Supported SQL subset
+
+- `SELECT columns FROM table`
+- `INSERT INTO table (columns) VALUES (values)`
+- `UPDATE table SET column = value [, ...] WHERE ...`
+- `DELETE FROM table WHERE ...`
+- `WHERE` operators: `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`, `LIKE`, `ILIKE`
+- `ORDER BY column ASC|DESC`
+- `LIMIT n`
+- `OFFSET n`
+
+Unsupported SQL must be rejected instead of guessed. This includes joins, subqueries, CTEs, grouping, arbitrary expressions, `OR`, parenthesized boolean expressions, and multiple-column ordering.
+
+## Slash commands
+
+```text
+\?              show slash command help
+\h              show supported SQL syntax
+\q              quit
+\dt             list known tables
+\d TABLE        describe a table by fetching one sample row
+\conninfo       show the current Supabase REST endpoint
+```
+
+## CRUD test scripts
+
+`scripts/tests/` contains four SQL scripts:
+
+```text
+01_create.sql
+02_read.sql
+03_update.sql
+04_delete.sql
+```
+
+Run the integration test:
+
+```bash
+cd skills/tg-skill/scripts
+make test-crud
+```
+
+The test creates a temporary row with a unique `fingerprint`, reads it, updates it, then attempts to delete it. If deletion fails while create/read/update pass, treat it as an API key or Supabase RLS DELETE permission limitation, not necessarily a `tsql` parser failure.
+
+## Important limitations
+
+- `tsql` is not a complete SQL compiler and not a PostgreSQL wire-protocol client.
+- It cannot execute arbitrary PostgreSQL syntax through Supabase REST.
+- It cannot use REST publishable keys to inspect all database schemas unless the Supabase project exposes schema metadata to that key.
+- `DELETE` may silently affect zero visible rows if Supabase RLS denies deletion; always verify with a following `SELECT`.
+- SQL strings should use single quotes. Example: `where title like '%计算机%'`.

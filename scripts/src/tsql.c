@@ -8,8 +8,8 @@
 #include <strings.h>
 #include <unistd.h>
 
-#define DEFAULT_URL "https://qlfinntromtdvjxyvbyn.supabase.co"
-#define DEFAULT_KEY "sb_publishable_jEf_67lB3bvHpFVGL8ov_Q_Xi3iV1il"
+#define DEFAULT_URL "https://xxxxxxxxxxxxxxxxxxxxxx.supabase.co"
+#define DEFAULT_KEY "sb_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 #define MAX_SQL 8192
 #define MAX_URL 16384

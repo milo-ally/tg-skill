@@ -1,11 +1,13 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <ctype.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <termios.h>
 #include <unistd.h>
 
 #define DEFAULT_URL "https://xxxxxxxxxxxxxxxxxxxxxx.supabase.co"
@@ -18,6 +20,7 @@
 #define MAX_TABLE_ROWS 1024
 #define MAX_TABLE_COLS 128
 #define MAX_CELL 4096
+#define MAX_HISTORY 100
 
 typedef enum {
     STMT_SELECT,
@@ -859,18 +862,164 @@ static int handle_slash_command(char *line) {
     return 0;
 }
 
+static char *history_items[MAX_HISTORY];
+static int history_count = 0;
+static struct termios saved_termios;
+static bool raw_mode_enabled = false;
+
+static void restore_terminal(void) {
+    if (raw_mode_enabled) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
+        raw_mode_enabled = false;
+    }
+}
+
+static void handle_terminal_signal(int sig) {
+    restore_terminal();
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void history_add_line(const char *line) {
+    if (!line || !*line) return;
+    if (history_count > 0 && strcmp(history_items[history_count - 1], line) == 0) return;
+    char *copy = strdup(line);
+    if (!copy) return;
+    if (history_count == MAX_HISTORY) {
+        free(history_items[0]);
+        memmove(history_items, history_items + 1, sizeof(history_items[0]) * (MAX_HISTORY - 1));
+        history_count--;
+    }
+    history_items[history_count++] = copy;
+}
+
+static bool enable_raw_mode(struct termios *orig) {
+    if (!isatty(STDIN_FILENO)) return false;
+    if (tcgetattr(STDIN_FILENO, orig) != 0) return false;
+    saved_termios = *orig;
+    struct termios raw = *orig;
+    raw.c_lflag &= (tcflag_t)~(ECHO | ICANON);
+    raw.c_iflag &= (tcflag_t)~(IXON | ICRNL);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) return false;
+    raw_mode_enabled = true;
+    return true;
+}
+
+static void refresh_line(const char *prompt, const char *buf, size_t len, size_t pos) {
+    printf("\r%s%.*s\x1b[K", prompt, (int)len, buf);
+    if (len > pos) printf("\x1b[%zuD", len - pos);
+    fflush(stdout);
+}
+
+static bool read_editable_line(const char *prompt, char *out, size_t out_sz) {
+    struct termios orig;
+    if (!enable_raw_mode(&orig)) {
+        fputs(prompt, stdout);
+        fflush(stdout);
+        return fgets(out, out_sz, stdin) != NULL;
+    }
+    char buf[MAX_SQL] = "";
+    size_t len = 0;
+    size_t pos = 0;
+    int hist_pos = history_count;
+    fputs(prompt, stdout);
+    fflush(stdout);
+    while (true) {
+        unsigned char c;
+        ssize_t n = read(STDIN_FILENO, &c, 1);
+        if (n <= 0) {
+            restore_terminal();
+            return false;
+        }
+        if (c == '\r' || c == '\n') {
+            restore_terminal();
+            putchar('\n');
+            snprintf(out, out_sz, "%s", buf);
+            return true;
+        }
+        if (c == 4) {
+            if (len == 0) {
+                restore_terminal();
+                putchar('\n');
+                return false;
+            }
+            continue;
+        }
+        if (c == 1) {
+            pos = 0;
+            refresh_line(prompt, buf, len, pos);
+            continue;
+        }
+        if (c == 5) {
+            pos = len;
+            refresh_line(prompt, buf, len, pos);
+            continue;
+        }
+        if (c == 127 || c == 8) {
+            if (pos > 0) {
+                memmove(buf + pos - 1, buf + pos, len - pos + 1);
+                pos--;
+                len--;
+                refresh_line(prompt, buf, len, pos);
+            }
+            continue;
+        }
+        if (c == 27) {
+            unsigned char seq[2];
+            if (read(STDIN_FILENO, &seq[0], 1) != 1 || read(STDIN_FILENO, &seq[1], 1) != 1) continue;
+            if (seq[0] != '[') continue;
+            if (seq[1] == 'A') {
+                if (history_count > 0 && hist_pos > 0) {
+                    hist_pos--;
+                    snprintf(buf, sizeof(buf), "%s", history_items[hist_pos]);
+                    len = strlen(buf);
+                    pos = len;
+                    refresh_line(prompt, buf, len, pos);
+                }
+            } else if (seq[1] == 'B') {
+                if (hist_pos < history_count) hist_pos++;
+                if (hist_pos == history_count) buf[0] = '\0';
+                else snprintf(buf, sizeof(buf), "%s", history_items[hist_pos]);
+                len = strlen(buf);
+                pos = len;
+                refresh_line(prompt, buf, len, pos);
+            } else if (seq[1] == 'C') {
+                if (pos < len) {
+                    pos++;
+                    refresh_line(prompt, buf, len, pos);
+                }
+            } else if (seq[1] == 'D') {
+                if (pos > 0) {
+                    pos--;
+                    refresh_line(prompt, buf, len, pos);
+                }
+            }
+            continue;
+        }
+        if ((isprint(c) || c >= 0x80) && len + 1 < sizeof(buf)) {
+            memmove(buf + pos + 1, buf + pos, len - pos + 1);
+            buf[pos++] = (char)c;
+            len++;
+            refresh_line(prompt, buf, len, pos);
+        }
+    }
+}
+
 static int repl(bool dry_run, bool count) {
     char line[MAX_SQL];
+    signal(SIGINT, handle_terminal_signal);
+    signal(SIGTERM, handle_terminal_signal);
     printf("tsql interactive mode. Type exit, quit, or \\q to quit.\n");
     while (true) {
-        printf("tsql=> ");
-        fflush(stdout);
-        if (!fgets(line, sizeof(line), stdin)) {
+        if (!read_editable_line("tsql=> ", line, sizeof(line))) {
             printf("\n");
             return 0;
         }
         trim_inplace(line);
         if (!line[0]) continue;
+        history_add_line(line);
         if (strcasecmp(line, "exit") == 0 || strcasecmp(line, "quit") == 0 || strcmp(line, "\\q") == 0) return 0;
         if (line[0] == '\\') {
             if (handle_slash_command(line)) return 0;

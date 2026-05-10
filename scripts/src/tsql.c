@@ -14,6 +14,10 @@
 #define MAX_SQL 8192
 #define MAX_URL 16384
 #define MAX_BODY 16384
+#define MAX_HTTP_RESPONSE 1048576
+#define MAX_TABLE_ROWS 1024
+#define MAX_TABLE_COLS 128
+#define MAX_CELL 4096
 
 typedef enum {
     STMT_SELECT,
@@ -36,6 +40,19 @@ typedef struct {
     char insert_vals[4096];
     char assignments[4096];
 } Query;
+
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+} StringBuf;
+
+typedef struct {
+    char keys[MAX_TABLE_COLS][128];
+    char cells[MAX_TABLE_ROWS][MAX_TABLE_COLS][MAX_CELL];
+    int col_count;
+    int row_count;
+} JsonTable;
 
 static void trim_inplace(char *s) {
     if (!s) return;
@@ -434,6 +451,186 @@ static void shell_quote(char *dst, size_t dst_sz, const char *src) {
     strncat(dst, "'", dst_sz - strlen(dst) - 1);
 }
 
+static bool sb_append(StringBuf *sb, const char *s) {
+    size_t n = strlen(s);
+    if (sb->len + n + 1 > MAX_HTTP_RESPONSE) return false;
+    if (sb->len + n + 1 > sb->cap) {
+        size_t cap = sb->cap ? sb->cap : 8192;
+        while (sb->len + n + 1 > cap) cap *= 2;
+        if (cap > MAX_HTTP_RESPONSE) cap = MAX_HTTP_RESPONSE;
+        char *data = realloc(sb->data, cap);
+        if (!data) return false;
+        sb->data = data;
+        sb->cap = cap;
+    }
+    memcpy(sb->data + sb->len, s, n);
+    sb->len += n;
+    sb->data[sb->len] = '\0';
+    return true;
+}
+
+static void skip_json_ws(const char **p) {
+    while (**p && isspace((unsigned char)**p)) (*p)++;
+}
+
+static bool parse_json_string(const char **p, char *out, size_t out_sz) {
+    if (**p != '"') return false;
+    (*p)++;
+    size_t used = 0;
+    while (**p && **p != '"') {
+        char c = *(*p)++;
+        if (c == '\\') {
+            c = *(*p)++;
+            if (!c) return false;
+            if (c == 'n') c = ' ';
+            else if (c == 'r' || c == 't') c = ' ';
+            else if (c == 'u') {
+                if (used + 6 < out_sz) {
+                    out[used++] = '\\';
+                    out[used++] = 'u';
+                    for (int i = 0; i < 4 && **p; i++) out[used++] = *(*p)++;
+                } else {
+                    for (int i = 0; i < 4 && **p; i++) (*p)++;
+                }
+                continue;
+            }
+        }
+        if (used + 1 < out_sz) out[used++] = c;
+    }
+    if (**p != '"') return false;
+    (*p)++;
+    out[used] = '\0';
+    return true;
+}
+
+static bool parse_json_scalar(const char **p, char *out, size_t out_sz) {
+    skip_json_ws(p);
+    if (**p == '"') return parse_json_string(p, out, out_sz);
+    size_t used = 0;
+    while (**p && **p != ',' && **p != '}' && **p != ']') {
+        if (used + 1 < out_sz) out[used++] = **p;
+        (*p)++;
+    }
+    out[used] = '\0';
+    trim_spaces_inplace(out);
+    return true;
+}
+
+static int table_col_index(JsonTable *table, const char *key) {
+    for (int i = 0; i < table->col_count; i++) {
+        if (strcmp(table->keys[i], key) == 0) return i;
+    }
+    if (table->col_count >= MAX_TABLE_COLS) return -1;
+    snprintf(table->keys[table->col_count], sizeof(table->keys[table->col_count]), "%s", key);
+    return table->col_count++;
+}
+
+static bool parse_json_table(const char *json, JsonTable *table) {
+    memset(table, 0, sizeof(*table));
+    const char *p = json;
+    skip_json_ws(&p);
+    if (*p != '[') return false;
+    p++;
+    skip_json_ws(&p);
+    if (*p == ']') return true;
+    while (*p && table->row_count < MAX_TABLE_ROWS) {
+        skip_json_ws(&p);
+        if (*p != '{') return false;
+        p++;
+        int row = table->row_count++;
+        skip_json_ws(&p);
+        while (*p && *p != '}') {
+            char key[128], val[MAX_CELL];
+            if (!parse_json_string(&p, key, sizeof(key))) return false;
+            skip_json_ws(&p);
+            if (*p != ':') return false;
+            p++;
+            skip_json_ws(&p);
+            if (*p == '{' || *p == '[') return false;
+            if (!parse_json_scalar(&p, val, sizeof(val))) return false;
+            int col = table_col_index(table, key);
+            if (col >= 0) snprintf(table->cells[row][col], sizeof(table->cells[row][col]), "%s", val);
+            skip_json_ws(&p);
+            if (*p == ',') {
+                p++;
+                skip_json_ws(&p);
+            } else if (*p != '}') return false;
+        }
+        if (*p != '}') return false;
+        p++;
+        skip_json_ws(&p);
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (*p == ']') break;
+        return false;
+    }
+    skip_json_ws(&p);
+    return *p == ']';
+}
+
+static int display_width(const char *s) {
+    int w = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < 0x80) w++;
+        else if ((*p & 0xC0) != 0x80) w += 2;
+    }
+    return w;
+}
+
+static void print_padded(const char *s, int width) {
+    fputs(s, stdout);
+    for (int i = display_width(s); i < width; i++) putchar(' ');
+}
+
+static void print_separator(const int *widths, int cols) {
+    putchar('+');
+    for (int c = 0; c < cols; c++) {
+        for (int i = 0; i < widths[c] + 2; i++) putchar('-');
+        putchar('+');
+    }
+    putchar('\n');
+}
+
+static bool print_json_table(const char *json) {
+    static JsonTable table;
+    if (!parse_json_table(json, &table)) return false;
+    if (table.col_count == 0) {
+        printf("(0 rows)\n");
+        return true;
+    }
+    int widths[MAX_TABLE_COLS];
+    for (int c = 0; c < table.col_count; c++) {
+        widths[c] = display_width(table.keys[c]);
+        for (int r = 0; r < table.row_count; r++) {
+            int w = display_width(table.cells[r][c]);
+            if (w > widths[c]) widths[c] = w;
+        }
+    }
+    print_separator(widths, table.col_count);
+    putchar('|');
+    for (int c = 0; c < table.col_count; c++) {
+        putchar(' ');
+        print_padded(table.keys[c], widths[c]);
+        printf(" |");
+    }
+    putchar('\n');
+    print_separator(widths, table.col_count);
+    for (int r = 0; r < table.row_count; r++) {
+        putchar('|');
+        for (int c = 0; c < table.col_count; c++) {
+            putchar(' ');
+            print_padded(table.cells[r][c][0] ? table.cells[r][c] : "NULL", widths[c]);
+            printf(" |");
+        }
+        putchar('\n');
+    }
+    print_separator(widths, table.col_count);
+    printf("(%d row%s)\n", table.row_count, table.row_count == 1 ? "" : "s");
+    return true;
+}
+
 static bool is_hex_digest(const char *s) {
     if (!s || strlen(s) < 32) return false;
     for (int i = 0; i < 32; i++) {
@@ -497,10 +694,40 @@ static int http_request(const char *method, const char *url, const char *body, b
              method, q_url, q_apikey, q_auth, q_prefer,
              body && body[0] ? " --data " : "",
              body && body[0] ? q_body : "");
-    int rc = system(cmd);
-    if (rc != 0) fprintf(stderr, "\nrequest failed with exit code %d\n", rc);
-    else printf("\n");
-    return rc == 0 ? 0 : 1;
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        perror("curl");
+        return 1;
+    }
+    StringBuf response = {0};
+    char chunk[4096];
+    bool ok = true;
+    while (fgets(chunk, sizeof(chunk), fp)) {
+        if (!sb_append(&response, chunk)) {
+            ok = false;
+            break;
+        }
+    }
+    int rc = pclose(fp);
+    if (!ok) {
+        free(response.data);
+        fprintf(stderr, "response too large\n");
+        return 1;
+    }
+    if (rc != 0) {
+        if (response.data && response.data[0]) fputs(response.data, stderr);
+        free(response.data);
+        fprintf(stderr, "\nrequest failed with exit code %d\n", rc);
+        return 1;
+    }
+    if (response.data && response.data[0]) {
+        if (!print_json_table(response.data)) fputs(response.data, stdout);
+        if (response.data[strlen(response.data) - 1] != '\n') putchar('\n');
+    } else {
+        printf("(0 rows)\n");
+    }
+    free(response.data);
+    return 0;
 }
 
 static int run_raw_get_path(const char *path) {

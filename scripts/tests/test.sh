@@ -48,8 +48,8 @@ printf '\n== update ==\n'
 UPDATE_SQL="$(render_sql "$ROOT_DIR/tests/03_update.sql")"
 UPDATE_OUT="$($BIN -f "$UPDATE_SQL")" || exit 1
 printf '%s\n' "$UPDATE_OUT"
-grep -F '"answer":"B"' <<<"$UPDATE_OUT" >/dev/null || { printf 'update answer check failed\n' >&2; exit 1; }
-grep -F '"confidence":"medium"' <<<"$UPDATE_OUT" >/dev/null || { printf 'update confidence check failed\n' >&2; exit 1; }
+grep -E '\| B +\|' <<<"$UPDATE_OUT" >/dev/null || { printf 'update answer check failed\n' >&2; exit 1; }
+grep -E '\| medium +\|' <<<"$UPDATE_OUT" >/dev/null || { printf 'update confidence check failed\n' >&2; exit 1; }
 
 printf '\n== delete ==\n'
 DELETE_SQL="$(render_sql "$ROOT_DIR/tests/04_delete.sql")"
